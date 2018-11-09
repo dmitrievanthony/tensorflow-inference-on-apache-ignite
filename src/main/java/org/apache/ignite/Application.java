@@ -17,13 +17,21 @@
 
 package org.apache.ignite;
 
+import java.awt.Color;
+import java.awt.image.BufferedImage;
+import java.awt.image.PixelGrabber;
 import java.io.DataInputStream;
+import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.nio.FloatBuffer;
 import java.nio.LongBuffer;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import javax.imageio.ImageIO;
+import org.apache.commons.io.FileUtils;
 import org.tensorflow.Graph;
 import org.tensorflow.Operation;
 import org.tensorflow.SavedModelBundle;
@@ -33,20 +41,76 @@ import org.tensorflow.TensorFlow;
 import org.tensorflow.framework.MetaGraphDef;
 import org.tensorflow.framework.SignatureDef;
 import org.tensorflow.framework.TensorInfo;
+import org.tensorflow.types.UInt8;
 
 public class Application {
 
     public static void main(String... args) throws Exception {
         System.out.println(TensorFlow.version());
-        try (SavedModelBundle bundle = SavedModelBundle.load("/home/gridgain/model/1541682474/", "serve")) {
-            printSignature(bundle);
 
-            for (MnistImage image : read()) {
-                long expRes = image.lb;
-                long predictedRes = predict(bundle.session(), image.pixels, image.data);
-                System.out.println("Expected: " + expRes + ", predicted: " + predictedRes);
-            }
+        byte[] serialized = FileUtils.readFileToByteArray(new File("/home/gridgain/tensorflow-inference-on-apache-ignite/src/main/resources/faces/saved_model.pb"));
+//        byte[] img = FileUtils.readFileToByteArray(new File("/home/gridgain/tensorflow-inference-on-apache-ignite/src/main/resources/1506756159.jpg"));
+
+        BufferedImage img = ImageIO.read(new File("/home/gridgain/tensorflow-inference-on-apache-ignite/src/main/resources/1506756159.jpg"));
+
+        int h = img.getHeight();
+        int w = img.getWidth();
+
+        int[] pixels = new int[w * h];
+        PixelGrabber pg = new PixelGrabber(img, 0, 0, w, h, pixels, 0, w);
+        pg.grabPixels();
+
+        int[][][][] data = new int[1][w][h][3];
+        for (int i = 0; i < pixels.length; i++) {
+            String temp = Integer.toString(pixels[i]);
+            data[0][i / h][i % h][0] = Color.decode(temp).getRed();
+            data[0][i / h][i % h][1] = Color.decode(temp).getBlue();
+            data[0][i / h][i % h][2] = Color.decode(temp).getGreen();
+            System.out.println(Arrays.toString(data[0][i / h][i % h]));
         }
+
+        Graph graph = new Graph();
+        graph.importGraphDef(serialized);
+
+        Session session = new Session(graph);
+
+        Tensor image = Tensor.create(data, UInt8.class);
+        System.out.println("Image type: " + image.dataType());
+        List<Tensor<?>> result = session.runner()
+            .feed("image_tensor:0",image)
+            .fetch("detection_boxes:0")
+            .fetch("detection_scores:0")
+            .fetch("detection_classes:0")
+            .fetch("num_detections:0")
+            .run();
+
+        Tensor<?> boxes = result.get(0);
+        Tensor<?> scores = result.get(1);
+        Tensor<?> classes = result.get(2);
+        Tensor<?> detections = result.get(3);
+
+        float[][][] arr = new float[1][100][4];
+        arr = boxes.copyTo(arr);
+        for (int i = 0; i < 100; i++) {
+            float[] box = arr[0][i];
+            System.out.println("Box: " + Arrays.toString(box));
+        }
+
+        float[] yyy = new float[1];
+        yyy = detections.copyTo(yyy);
+
+        System.out.println("Detections: " + Arrays.toString(yyy));
+
+//        try (SavedModelBundle bundle = SavedModelBundle.load("/home/gridgain/tensorflow-inference-on-apache-ignite/src/main/resources/faces/")) {
+////        try (SavedModelBundle bundle = SavedModelBundle.load("/home/gridgain/model/1541682474/", "serve")) {
+//            Operation op = bundle.graph().operation("image_tensor:0");
+//            System.out.println("Op: " + op);
+////            for (MnistImage image : read()) {
+////                long expRes = image.lb;
+////                long predictedRes = predict(bundle.session(), image.pixels, image.data);
+////                System.out.println("Expected: " + expRes + ", predicted: " + predictedRes);
+////            }
+//        }
     }
 
     private static void printOperation(Graph graph) {
